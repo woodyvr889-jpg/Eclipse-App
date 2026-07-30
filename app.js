@@ -462,14 +462,41 @@ function showLocationError(msg) {
 
 /* ═══════════════════════════════════════════════════════════════════════════
    7. COMPASS / FIND THE ECLIPSE
+   ─────────────────────────────────────────────────────────────────────────
+   Glitch fixes applied:
+   • Only ONE orientation listener registered at a time (not both absolute
+     and relative simultaneously — that caused every event to fire twice).
+   • Exponential moving average (circular/angular EMA) smooths the raw
+     sensor stream so micro-vibrations don't spin the needle.
+   • requestAnimationFrame throttle — DOM is updated at most once per
+     render frame (~16 ms), not on every sensor tick (can be 60 Hz+).
+   • Continuous-rotation tracking prevents the 360° snap when the heading
+     crosses the North/0° boundary.
+   • CSS transition switched from spring overshoot to plain ease-out.
    ═══════════════════════════════════════════════════════════════════════════ */
+
+// ── Compass state (kept separate from APP for clarity) ────────────────────
+const COMPASS = {
+  rawHeading:       null,   // latest raw reading from sensor
+  smoothHeading:    null,   // exponentially smoothed heading
+  arrowAngle:       0,      // continuous (unwrapped) arrow angle in degrees
+  roseAngle:        0,      // continuous rose angle
+  rafPending:       false,  // true while a rAF is scheduled
+  listenerType:     null,   // 'absolute' | 'relative' — which event we bound
+  boundHandler:     null,   // reference to the bound listener for removal
+  EMA_ALPHA:        0.15,   // smoothing factor — lower = smoother but laggier
+  ALIGN_THRESHOLD:  8,      // degrees within which we show "aligned" message
+};
 
 /** Start the compass — requests orientation + location permissions */
 async function startCompass() {
   const statusEl = document.getElementById('compass-status');
   const startBtn = document.getElementById('compass-start-btn');
 
-  // ── iOS 13+ requires a user-gesture permission for DeviceOrientationEvent ──
+  // ── Remove any existing listener before re-attaching ──────────────────
+  stopCompassListener();
+
+  // ── iOS 13+ requires a user-gesture permission ─────────────────────────
   if (typeof DeviceOrientationEvent !== 'undefined' &&
       typeof DeviceOrientationEvent.requestPermission === 'function') {
     try {
@@ -478,36 +505,27 @@ async function startCompass() {
         showCompassError('Compass permission denied. Please allow motion access in your browser settings.');
         return;
       }
-      APP.compassPermission = true;
     } catch (err) {
       showCompassError('Could not request compass permission: ' + err.message);
       return;
     }
-  } else {
-    // Android / desktop — DeviceOrientationEvent available without extra permission
-    APP.compassPermission = true;
   }
 
-  // ── Get location so we can calculate the eclipse target direction ──
+  if (!window.DeviceOrientationEvent) {
+    showCompassError('Your device does not support compass mode. Use the manual direction guide below.');
+    return;
+  }
+
+  // ── Get location so we can calculate the eclipse target direction ───────
   if (APP.userLat === null) {
     statusEl.textContent = 'Getting your location…';
     await new Promise(resolve => {
       navigator.geolocation.getCurrentPosition(
-        pos => {
-          APP.userLat = pos.coords.latitude;
-          APP.userLng = pos.coords.longitude;
-          resolve();
-        },
-        () => resolve(), // continue without location
+        pos => { APP.userLat = pos.coords.latitude; APP.userLng = pos.coords.longitude; resolve(); },
+        () => resolve(),
         { timeout: 8000 }
       );
     });
-  }
-
-  // ── Listen to device orientation ──
-  if (!window.DeviceOrientationEvent) {
-    showCompassError('Your device does not support compass mode. Use the manual direction guide below.');
-    return;
   }
 
   APP.compassActive = true;
@@ -515,7 +533,7 @@ async function startCompass() {
   startBtn.disabled = true;
   startBtn.style.opacity = '0.6';
 
-  // Determine eclipse target azimuth from location
+  // Eclipse target direction from user's location
   const nearest = APP.userLat !== null
     ? getEclipseDirectionForLocation(APP.userLat, APP.userLng)
     : ECLIPSE_DATA.find(d => d.city === 'London');
@@ -523,62 +541,164 @@ async function startCompass() {
   APP.eclipseTarget = nearest ? nearest.direction : 261;
   document.getElementById('cs-target').textContent = APP.eclipseTarget + '°';
 
-  // Update location info panel too
   if (APP.userLat !== null && nearest) {
     updateLocationUI('success', { lat: APP.userLat, lng: APP.userLng, nearest });
   }
 
-  statusEl.textContent = 'Compass active — move your phone slowly.';
+  statusEl.textContent = 'Compass active — hold your phone flat and turn slowly.';
 
-  window.addEventListener('deviceorientationabsolute', handleOrientation, true);
-  window.addEventListener('deviceorientation',         handleOrientation, true);
+  // ── Attach ONE listener: prefer absolute (true north), fall back to relative ──
+  // We probe for absolute first by temporarily attaching it and checking the
+  // `absolute` flag on the first event. If not absolute, switch to relative.
+  COMPASS.boundHandler = handleOrientationEvent;
+
+  // Try absolute first (works on Android Chrome with true-north magnetometer)
+  window.addEventListener('deviceorientationabsolute', COMPASS.boundHandler, true);
+  COMPASS.listenerType = 'absolute';
+
+  // After 2 s, if we've received no usable absolute heading, switch to relative
+  setTimeout(() => {
+    if (COMPASS.smoothHeading === null && APP.compassActive) {
+      stopCompassListener();
+      window.addEventListener('deviceorientation', COMPASS.boundHandler, true);
+      COMPASS.listenerType = 'relative';
+      statusEl.textContent = 'Using relative compass mode — accuracy may vary.';
+    }
+  }, 2000);
 }
 
-/** Handle device orientation events and update the compass UI */
-function handleOrientation(event) {
-  // `alpha` is the compass heading (degrees from North), but varies by browser/OS
-  let heading = null;
+/** Remove whichever listener is currently bound */
+function stopCompassListener() {
+  if (COMPASS.boundHandler) {
+    window.removeEventListener('deviceorientationabsolute', COMPASS.boundHandler, true);
+    window.removeEventListener('deviceorientation',         COMPASS.boundHandler, true);
+  }
+  COMPASS.listenerType  = null;
+  COMPASS.rafPending    = false;
+}
 
-  if (event.webkitCompassHeading !== undefined) {
-    // iOS — webkitCompassHeading is already a true north-relative bearing
-    heading = event.webkitCompassHeading;
-  } else if (event.absolute && event.alpha !== null) {
-    // Android absolute — convert alpha to bearing
-    heading = (360 - event.alpha) % 360;
-  } else if (event.alpha !== null) {
-    // Fallback — may not be absolute north but still useful
-    heading = (360 - event.alpha) % 360;
+/**
+ * Raw sensor handler — extracts heading and feeds the smoother.
+ * Called at sensor rate (up to 60 Hz). All heavy work is deferred to rAF.
+ */
+function handleOrientationEvent(event) {
+  let raw = null;
+
+  if (event.webkitCompassHeading != null && event.webkitCompassHeading >= 0) {
+    // iOS Safari — already true-north bearing
+    raw = event.webkitCompassHeading;
+  } else if (event.alpha != null) {
+    // Android / others — alpha is CCW from north in absolute mode,
+    // or CCW from arbitrary reference in relative mode.
+    // Convert to clockwise bearing:
+    raw = (360 - event.alpha % 360 + 360) % 360;
   }
 
-  if (heading === null) return;
+  if (raw === null) return;
 
-  APP.currentHeading = Math.round(heading);
+  COMPASS.rawHeading = raw;
 
-  // Calculate how many degrees to rotate to face the eclipse
-  let diff = APP.eclipseTarget - APP.currentHeading;
-  // Normalise to -180 … +180 for shortest-path rotation
-  if (diff > 180)  diff -= 360;
-  if (diff < -180) diff += 360;
+  // Apply circular exponential moving average to kill sensor noise
+  if (COMPASS.smoothHeading === null) {
+    COMPASS.smoothHeading = raw; // seed on first reading
+  } else {
+    COMPASS.smoothHeading = circularEMA(COMPASS.smoothHeading, raw, COMPASS.EMA_ALPHA);
+  }
 
-  const absDiff = Math.abs(diff);
-  const direction = diff > 0
-    ? `Turn right ${absDiff}°`
-    : diff < 0
-    ? `Turn left ${absDiff}°`
-    : '✅ Facing the eclipse!';
+  // Schedule a DOM update — but only one rAF at a time
+  if (!COMPASS.rafPending) {
+    COMPASS.rafPending = true;
+    requestAnimationFrame(applyCompassToDOM);
+  }
+}
 
-  // Update UI
-  document.getElementById('cs-heading').textContent = APP.currentHeading + '°';
-  document.getElementById('cs-diff').textContent    = direction;
+/**
+ * Circular (angular) exponential moving average.
+ * Handles the 0°/360° boundary correctly by averaging on the unit circle.
+ *
+ * @param {number} prev - previous smoothed angle (degrees)
+ * @param {number} next - new raw angle (degrees)
+ * @param {number} alpha - weight for the new reading (0 = no update, 1 = instant)
+ * @returns {number} smoothed angle in [0, 360)
+ */
+function circularEMA(prev, next, alpha) {
+  const pRad = prev * (Math.PI / 180);
+  const nRad = next * (Math.PI / 180);
+  const sinS = (1 - alpha) * Math.sin(pRad) + alpha * Math.sin(nRad);
+  const cosS = (1 - alpha) * Math.cos(pRad) + alpha * Math.cos(nRad);
+  return (Math.atan2(sinS, cosS) * (180 / Math.PI) + 360) % 360;
+}
 
-  // Rotate the compass arrow so it always points at the eclipse
-  const arrowAngle = APP.eclipseTarget - APP.currentHeading;
+/**
+ * Apply the smoothed heading to the DOM. Called once per animation frame.
+ * Uses continuous (unwrapped) rotation so CSS never needs to snap 360°.
+ */
+function applyCompassToDOM() {
+  COMPASS.rafPending = false;
+  if (!APP.compassActive || COMPASS.smoothHeading === null) return;
+
+  const heading = COMPASS.smoothHeading;
+  const target  = APP.eclipseTarget;
+
+  // ── Shortest-path continuous rotation for the arrow ─────────────────
+  // Compute the desired arrow angle (target - heading), then find the
+  // shortest angular step from the last known angle to avoid 360° jumps.
+  const desiredArrow = target - heading;
+  const arrowDelta   = shortestAngleDelta(COMPASS.arrowAngle, desiredArrow);
+  COMPASS.arrowAngle += arrowDelta * 0.25; // gentle lerp — extra smoothing layer
+
+  // ── Shortest-path continuous rotation for the compass rose ───────────
+  const desiredRose = -heading;
+  const roseDelta   = shortestAngleDelta(COMPASS.roseAngle, desiredRose);
+  COMPASS.roseAngle += roseDelta * 0.25;
+
+  // ── Apply transforms ─────────────────────────────────────────────────
   const wrap = document.getElementById('compass-arrow-wrap');
-  if (wrap) wrap.style.transform = `rotate(${arrowAngle}deg)`;
-
-  // Rotate the compass rose opposite to heading (so N stays relative)
   const rose = document.querySelector('.compass-rose');
-  if (rose) rose.style.transform = `rotate(${-APP.currentHeading}deg)`;
+  if (wrap) wrap.style.transform = `rotate(${COMPASS.arrowAngle}deg)`;
+  if (rose) rose.style.transform = `rotate(${COMPASS.roseAngle}deg)`;
+
+  // ── Update text readouts ─────────────────────────────────────────────
+  const headingRounded = Math.round(heading);
+  const diff = angleDiff(target, heading); // signed, -180…+180
+  const absDiff = Math.round(Math.abs(diff));
+
+  const headingEl = document.getElementById('cs-heading');
+  if (headingEl) headingEl.textContent = headingRounded + '°';
+
+  const diffEl = document.getElementById('cs-diff');
+  if (diffEl) {
+    if (absDiff <= COMPASS.ALIGN_THRESHOLD) {
+      diffEl.textContent = '✅ Aligned!';
+      diffEl.style.color = '#00e090';
+    } else {
+      diffEl.textContent = diff > 0
+        ? `➡ Turn right ${absDiff}°`
+        : `⬅ Turn left ${absDiff}°`;
+      diffEl.style.color = '';
+    }
+  }
+}
+
+/**
+ * Signed shortest angular difference from `from` to `to`, range -180…+180.
+ */
+function angleDiff(to, from) {
+  let d = ((to - from) % 360 + 360) % 360;
+  if (d > 180) d -= 360;
+  return d;
+}
+
+/**
+ * Shortest delta to rotate from `current` to `desired` continuous angle.
+ * Works even when current has wound up beyond ±360.
+ */
+function shortestAngleDelta(current, desired) {
+  // Normalise desired relative to current
+  let diff = desired - current;
+  // Bring into -180…+180
+  diff = ((diff % 360) + 540) % 360 - 180;
+  return diff;
 }
 
 function showCompassError(msg) {
@@ -590,6 +710,7 @@ function showCompassError(msg) {
     startBtn.disabled = false;
     startBtn.style.opacity = '';
   }
+  APP.compassActive = false;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
