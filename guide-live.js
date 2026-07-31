@@ -42,3 +42,38 @@ function updatePhase(now) {
 }
 
 setInterval(updateTimers, 1000);
+
+function speak(text) {
+  const msg = new SpeechSynthesisUtterance(text);
+  msg.rate = 1;
+  msg.pitch = 1;
+  speechSynthesis.speak(msg);
+}
+
+// Countdown voice triggers
+function checkVoiceAlerts() {
+  const now = new Date();
+
+  const timeToStart = Math.floor((eclipseStart - now) / 1000);
+  const timeToMax = Math.floor((eclipseMax - now) / 1000);
+
+  // Glasses warning
+  if (timeToStart === 10) {
+    speak("Put your eclipse glasses on in 10 seconds");
+  }
+
+  if (timeToStart <= 10 && timeToStart > 0) {
+    speak(timeToStart.toString());
+  }
+
+  // Maximum eclipse countdown
+  if (timeToMax === 10) {
+    speak("Maximum eclipse in 10 seconds");
+  }
+
+  if (timeToMax <= 10 && timeToMax > 0) {
+    speak(timeToMax.toString());
+  }
+}
+
+setInterval(checkVoiceAlerts, 1000);
