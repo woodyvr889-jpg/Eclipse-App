@@ -1,3 +1,37 @@
+// ==========================
+// 🔊 VOICE SYSTEM
+// ==========================
+let spokenEvents = {};
+
+function speak(text) {
+  if (!('speechSynthesis' in window)) return;
+
+  const msg = new SpeechSynthesisUtterance(text);
+  msg.rate = 1;
+  msg.pitch = 1;
+  msg.volume = 1;
+
+  speechSynthesis.cancel(); // stop overlap
+  speechSynthesis.speak(msg);
+}
+
+// Countdown voice helper
+function countdownVoice(label) {
+  let count = 10;
+
+  function step() {
+    if (count > 0) {
+      speak(`${label} in ${count}`);
+      count--;
+      setTimeout(step, 1000);
+    } else {
+      speak(label + " now");
+    }
+  }
+
+  step();
+}
+
 // Example eclipse times (EDIT THESE for your location)
 const eclipseStart = new Date("2026-08-12T09:00:00");
 const eclipseMax = new Date("2026-08-12T10:30:00"); // maximum eclipse (greatest eclipse)
