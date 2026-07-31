@@ -1,113 +1,309 @@
 // ==========================
+// 🌒 ECLIPSE GUIDE LIVE SYSTEM
+// ==========================
+
+
+// ==========================
 // 🔊 VOICE SYSTEM
 // ==========================
+
 let spokenEvents = {};
 
 function speak(text) {
-  if (!('speechSynthesis' in window)) return;
+
+  if (!("speechSynthesis" in window)) {
+    return;
+  }
 
   const msg = new SpeechSynthesisUtterance(text);
+
   msg.rate = 1;
   msg.pitch = 1;
   msg.volume = 1;
 
-  speechSynthesis.cancel(); // stop overlap
+  speechSynthesis.cancel();
   speechSynthesis.speak(msg);
 }
 
-// Countdown voice helper
+
 function countdownVoice(label) {
+
   let count = 10;
 
-  function step() {
+  function countdown() {
+
     if (count > 0) {
+
       speak(`${label} in ${count}`);
+
       count--;
-      setTimeout(step, 1000);
+
+      setTimeout(countdown, 1000);
+
     } else {
-      speak(label + " now");
+
+      speak(`${label} now`);
+
     }
+
   }
 
-  step();
+  countdown();
+
 }
 
-// Example eclipse times (EDIT THESE for your location)
-const eclipseStart = new Date("2026-08-12T09:00:00");
-const eclipseMax = new Date("2026-08-12T10:30:00"); // maximum eclipse (greatest eclipse)
-const eclipseEnd = new Date("2026-08-12T12:00:00");
 
-function updateTimers() {
-  const now = new Date();
 
-  updateTimer("startTimer", eclipseStart - now);
-  updateTimer("maxTimer", eclipseMax - now);
-  updateTimer("endTimer", eclipseEnd - now);
+// ==========================
+// ⏱ ECLIPSE TIMES (UK BST)
+// ==========================
 
-  updatePhase(now);
+const eclipseStart = new Date(
+"2026-08-12T18:13:45+01:00"
+);
+
+const eclipseMax = new Date(
+"2026-08-12T19:10:17+01:00"
+);
+
+const eclipseEnd = new Date(
+"2026-08-12T20:03:49+01:00"
+);
+
+
+
+// ==========================
+// ⏱ TIMER SYSTEM
+// ==========================
+
+function updateTimers(){
+
+ const now = new Date();
+
+
+ updateTimer(
+ "startTimer",
+ eclipseStart - now
+ );
+
+
+ updateTimer(
+ "maxTimer",
+ eclipseMax - now
+ );
+
+
+ updateTimer(
+ "endTimer",
+ eclipseEnd - now
+ );
+
+
+ updatePhase(now);
+
+
+ checkVoiceAlerts(now);
+
 }
 
-function updateTimer(id, diff) {
-  if (diff <= 0) {
-    document.getElementById(id).innerText = "00:00:00";
-    return;
-  }
 
-  const h = Math.floor(diff / 1000 / 60 / 60);
-  const m = Math.floor(diff / 1000 / 60) % 60;
-  const s = Math.floor(diff / 1000) % 60;
 
-  document.getElementById(id).innerText =
-    `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+function updateTimer(id,diff){
+
+ const element =
+ document.getElementById(id);
+
+
+ if(!element) return;
+
+
+ if(diff <= 0){
+
+  element.innerText =
+  "00:00:00";
+
+  return;
+
+ }
+
+
+ const hours =
+ Math.floor(diff / 1000 / 60 / 60);
+
+
+ const minutes =
+ Math.floor(diff / 1000 / 60)%60;
+
+
+ const seconds =
+ Math.floor(diff / 1000)%60;
+
+
+ element.innerText =
+ `${String(hours).padStart(2,"0")}:${String(minutes).padStart(2,"0")}:${String(seconds).padStart(2,"0")}`;
+
 }
 
-function updatePhase(now) {
-  let phaseText = "Waiting for Eclipse...";
 
-  if (now >= eclipseStart && now < eclipseMax) {
-    phaseText = "Eclipse in Progress";
-  } else if (now >= eclipseMax && now < eclipseEnd) {
-    phaseText = "Maximum Eclipse (Greatest Eclipse)";
-  } else if (now >= eclipseEnd) {
-    phaseText = "Eclipse Finished";
-  }
 
-  document.getElementById("eclipsePhase").innerText = phaseText;
+
+// ==========================
+// 🌘 PHASE STATUS
+// ==========================
+
+function updatePhase(now){
+
+ const phase =
+ document.getElementById("eclipsePhase");
+
+
+ if(!phase) return;
+
+
+ let text =
+ "Waiting for Eclipse...";
+
+
+ if(now >= eclipseStart &&
+ now < eclipseMax){
+
+  text =
+  "🌒 Eclipse In Progress";
+
+ }
+
+
+ else if(now >= eclipseMax &&
+ now < eclipseEnd){
+
+  text =
+  "🌑 Greatest Eclipse Happening";
+
+ }
+
+
+ else if(now >= eclipseEnd){
+
+  text =
+  "☀️ Eclipse Finished";
+
+ }
+
+
+ phase.innerText=text;
+
 }
 
-setInterval(updateTimers, 1000);
 
-function speak(text) {
-  const msg = new SpeechSynthesisUtterance(text);
-  msg.rate = 1;
-  msg.pitch = 1;
-  speechSynthesis.speak(msg);
+
+// ==========================
+// 🔊 VOICE ALERTS
+// ==========================
+
+function checkVoiceAlerts(now){
+
+
+ const startSeconds =
+ Math.floor(
+ (eclipseStart-now)/1000
+ );
+
+
+ const maxSeconds =
+ Math.floor(
+ (eclipseMax-now)/1000
+ );
+
+
+
+ // Glasses countdown
+
+ if(startSeconds <=10 &&
+ startSeconds >0 &&
+ !spokenEvents.start){
+
+  spokenEvents.start=true;
+
+  countdownVoice(
+  "Put your eclipse glasses on"
+  );
+
+ }
+
+
+
+ // Greatest eclipse countdown
+
+ if(maxSeconds <=10 &&
+ maxSeconds >0 &&
+ !spokenEvents.max){
+
+  spokenEvents.max=true;
+
+  countdownVoice(
+  "Greatest eclipse"
+  );
+
+ }
+
+
+
+ // Eclipse started
+
+ if(now >= eclipseStart &&
+ !spokenEvents.started){
+
+  spokenEvents.started=true;
+
+  speak(
+  "The eclipse has started"
+  );
+
+ }
+
+
+
+ // Maximum eclipse
+
+ if(now >= eclipseMax &&
+ !spokenEvents.maximum){
+
+  spokenEvents.maximum=true;
+
+  speak(
+  "Greatest eclipse now"
+  );
+
+ }
+
+
+
+ // End
+
+ if(now >= eclipseEnd &&
+ !spokenEvents.finished){
+
+  spokenEvents.finished=true;
+
+  speak(
+  "The eclipse has ended"
+  );
+
+ }
+
+
 }
 
-// Countdown voice triggers
-function checkVoiceAlerts() {
-  const now = new Date();
 
-  const timeToStart = Math.floor((eclipseStart - now) / 1000);
-  const timeToMax = Math.floor((eclipseMax - now) / 1000);
 
-  // Glasses warning
-  if (timeToStart === 10) {
-    speak("Put your eclipse glasses on in 10 seconds");
-  }
+// ==========================
+// 🚀 START APP
+// ==========================
 
-  if (timeToStart <= 10 && timeToStart > 0) {
-    speak(timeToStart.toString());
-  }
+setInterval(
+updateTimers,
+1000
+);
 
-  // Maximum eclipse countdown
-  if (timeToMax === 10) {
-    speak("Maximum eclipse in 10 seconds");
-  }
 
-  if (timeToMax <= 10 && timeToMax > 0) {
-    speak(timeToMax.toString());
-  }
-}
-
-setInterval(checkVoiceAlerts, 1000);
+updateTimers();
